@@ -1,0 +1,313 @@
+// backend/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// AUTENTICACIÓN
+// ============================================
+
+model Usuario {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  passwordHash    String    @map("password_hash")
+  nombre          String
+  rol             RolUsuario @default(OPERADOR)
+  activo          Boolean   @default(true)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relaciones
+  checklistCompletados  ChecklistCompletado[]
+  configuracionAlertas  ConfiguracionAlerta[]
+  notificaciones        Notificacion[]
+
+  @@map("usuarios")
+}
+
+enum RolUsuario {
+  ADMIN
+  OPERADOR
+  AUDITOR
+}
+
+// ============================================
+// OBLIGACIONES LEGALES
+// ============================================
+
+model TipoObligacion {
+  id              String    @id @default(uuid())
+  codigo          String    @unique          // IPS_APORTE, PLANILLA_MTESS, AGUINALDO, etc.
+  nombre          String                      // "Aportes IPS"
+  descripcion     String?
+  categoria       CategoriaObligacion
+  
+  // Recurrencia
+  frecuencia      Frecuencia                  // MENSUAL, ANUAL, SEMESTRAL, etc.
+  diaVencimiento  Int?      @map("dia_vencimiento")    // día del mes (ej: 15 para IPS)
+  mesVencimiento  Int?      @map("mes_vencimiento")    // mes del año (ej: 6 y 12 para aguinaldo)
+  
+  // Configuración
+  esObligatoria   Boolean   @default(true) @map("es_obligatoria")
+  fundamentoLegal String?   @map("fundamento_legal")   // "Ley 4933/13 Art. XX"
+  activo          Boolean   @default(true)
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relaciones
+  obligaciones    Obligacion[]
+  itemsChecklist  ItemChecklistTemplate[]
+
+  @@map("tipos_obligacion")
+}
+
+enum CategoriaObligacion {
+  SEGURIDAD_SOCIAL      // IPS
+  TRIBUTARIA_LABORAL    // Planillas MTESS
+  REMUNERACION          // Aguinaldo, salario mínimo
+  CONTRACTUAL           // Renovación contratos
+  CAPACITACION          // Capacitaciones obligatorias
+}
+
+enum Frecuencia {
+  MENSUAL
+  BIMESTRAL
+  TRIMESTRAL
+  SEMESTRAL
+  ANUAL
+  UNICA
+}
+
+model Obligacion {
+  id                String    @id @default(uuid())
+  tipoObligacionId  String    @map("tipo_obligacion_id")
+  
+  // Período
+  anio              Int
+  mes               Int?                      // null para anuales
+  
+  // Fechas
+  fechaVencimiento  DateTime  @map("fecha_vencimiento")
+  fechaCumplimiento DateTime? @map("fecha_cumplimiento")
+  
+  // Estado
+  estado            EstadoObligacion @default(PENDIENTE)
+  
+  // Metadata
+  observaciones     String?
+  comprobante       String?                   // URL/path del archivo
+  
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  // Relaciones
+  tipoObligacion    TipoObligacion @relation(fields: [tipoObligacionId], references: [id])
+  alertasEnviadas   AlertaEnviada[]
+
+  @@unique([tipoObligacionId, anio, mes])
+  @@index([estado])
+  @@index([fechaVencimiento])
+  @@map("obligaciones")
+}
+
+enum EstadoObligacion {
+  PENDIENTE
+  PROXIMO       // Dentro del rango de alerta
+  CUMPLIDO
+  VENCIDO
+}
+
+// ============================================
+// CHECKLIST DE CUMPLIMIENTO
+// ============================================
+
+model ItemChecklistTemplate {
+  id                String    @id @default(uuid())
+  tipoObligacionId  String?   @map("tipo_obligacion_id")
+  
+  nombre            String                    // "Pago IPS", "Salarios pagados"
+  descripcion       String?
+  orden             Int       @default(0)
+  requiereComprobante Boolean @default(false) @map("requiere_comprobante")
+  activo            Boolean   @default(true)
+  
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  // Relaciones
+  tipoObligacion    TipoObligacion? @relation(fields: [tipoObligacionId], references: [id])
+  completados       ChecklistCompletado[]
+
+  @@map("items_checklist_template")
+}
+
+model ChecklistMensual {
+  id        String    @id @default(uuid())
+  anio      Int
+  mes       Int
+  
+  // Generación automática
+  generadoEn    DateTime  @default(now()) @map("generado_en")
+  cerrado       Boolean   @default(false)
+  cerradoEn     DateTime? @map("cerrado_en")
+  
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // Relaciones
+  items         ChecklistCompletado[]
+
+  @@unique([anio, mes])
+  @@map("checklists_mensuales")
+}
+
+model ChecklistCompletado {
+  id                  String    @id @default(uuid())
+  checklistMensualId  String    @map("checklist_mensual_id")
+  itemTemplateId      String    @map("item_template_id")
+  
+  completado          Boolean   @default(false)
+  fechaCompletado     DateTime? @map("fecha_completado")
+  completadoPorId     String?   @map("completado_por_id")
+  
+  // Comprobante opcional
+  comprobanteUrl      String?   @map("comprobante_url")
+  comprobanteNombre   String?   @map("comprobante_nombre")
+  
+  observaciones       String?
+  
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  // Relaciones
+  checklistMensual    ChecklistMensual @relation(fields: [checklistMensualId], references: [id])
+  itemTemplate        ItemChecklistTemplate @relation(fields: [itemTemplateId], references: [id])
+  completadoPor       Usuario? @relation(fields: [completadoPorId], references: [id])
+
+  @@unique([checklistMensualId, itemTemplateId])
+  @@map("checklist_completados")
+}
+
+// ============================================
+// SISTEMA DE ALERTAS
+// ============================================
+
+model ConfiguracionAlerta {
+  id              String    @id @default(uuid())
+  usuarioId       String    @map("usuario_id")
+  
+  // Cuándo alertar
+  diasAntes7      Boolean   @default(true) @map("dias_antes_7")
+  diasAntes3      Boolean   @default(true) @map("dias_antes_3")
+  diasAntes1      Boolean   @default(true) @map("dias_antes_1")
+  diaVencimiento  Boolean   @default(true) @map("dia_vencimiento")
+  
+  // Canales
+  porEmail        Boolean   @default(true) @map("por_email")
+  enSistema       Boolean   @default(true) @map("en_sistema")
+  
+  // Filtros opcionales
+  categorias      CategoriaObligacion[]     // vacío = todas
+  
+  activo          Boolean   @default(true)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Relaciones
+  usuario         Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@unique([usuarioId])
+  @@map("configuracion_alertas")
+}
+
+model AlertaEnviada {
+  id              String    @id @default(uuid())
+  obligacionId    String    @map("obligacion_id")
+  
+  tipoAlerta      TipoAlerta
+  canal           CanalAlerta
+  destinatarioEmail String? @map("destinatario_email")
+  
+  enviada         Boolean   @default(false)
+  enviadaEn       DateTime? @map("enviada_en")
+  error           String?
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  // Relaciones
+  obligacion      Obligacion @relation(fields: [obligacionId], references: [id])
+
+  @@index([obligacionId])
+  @@map("alertas_enviadas")
+}
+
+enum TipoAlerta {
+  DIAS_7
+  DIAS_3
+  DIAS_1
+  DIA_VENCIMIENTO
+  VENCIDA
+}
+
+enum CanalAlerta {
+  EMAIL
+  SISTEMA
+}
+
+// ============================================
+// NOTIFICACIONES IN-APP
+// ============================================
+
+model Notificacion {
+  id          String    @id @default(uuid())
+  usuarioId   String    @map("usuario_id")
+  
+  titulo      String
+  mensaje     String
+  tipo        TipoNotificacion
+  leida       Boolean   @default(false)
+  leidaEn     DateTime? @map("leida_en")
+  
+  // Referencia opcional
+  entidadTipo String?   @map("entidad_tipo")    // "obligacion", "checklist"
+  entidadId   String?   @map("entidad_id")
+  
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  // Relaciones
+  usuario     Usuario @relation(fields: [usuarioId], references: [id])
+
+  @@index([usuarioId, leida])
+  @@map("notificaciones")
+}
+
+enum TipoNotificacion {
+  ALERTA_VENCIMIENTO
+  CHECKLIST_GENERADO
+  OBLIGACION_VENCIDA
+  INFO
+}
+
+// ============================================
+// CONSTANTES LABORALES PARAGUAY
+// ============================================
+
+model ParametroLaboral {
+  id          String    @id @default(uuid())
+  codigo      String    @unique             // SALARIO_MINIMO, IPS_PATRONAL, IPS_TRABAJADOR
+  nombre      String
+  valor       Decimal   @db.Decimal(15, 4)
+  vigenciaDesde DateTime @map("vigencia_desde")
+  vigenciaHasta DateTime? @map("vigencia_hasta")
+  
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([codigo, vigenciaDesde])
+  @@map("parametros_laborales")
+}
